@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """
 Programa Escoba
-Con validación de jugadas, evaluación del oponente, asignación de la última mano,
-y desglose final de la puntuación.
+Con validación de jugadas, sugerencia de la mejor jugada contra el oponente
+(incluyendo razonamiento a 1 jugada, la respuesta del oponente, la elección interactiva
+de captura para el usuario cuando el oponente renuncia a capturar) y desglose final de la puntuación.
 
 Cada carta aporta:
   - 1/21 por carta (hasta 21),
@@ -14,7 +15,6 @@ Cada carta aporta:
 # ===============================
 # Funciones de manejo de cartas
 # ===============================
-
 def parsear_carta(carta_str):
     """
     Parsea una cadena con formato <valor><palo> y devuelve (valor, palo)
@@ -25,7 +25,7 @@ def parsear_carta(carta_str):
         return None
     valor_str = carta_str[:-1]
     palo = carta_str[-1].upper()
-    if palo not in ('O','C','E','B'):
+    if palo not in ('O', 'C', 'E', 'B'):
         return None
     try:
         valor = int(valor_str)
@@ -35,9 +35,11 @@ def parsear_carta(carta_str):
         return None
     return (valor, palo)
 
-def leer_cartas(mensaje, cantidad):
+def leer_cartas(mensaje, cantidad, allowed=None):
     """
     Solicita al usuario 'cantidad' de cartas separadas por comas y las valida.
+    Si se proporciona el parámetro 'allowed', se verificará que cada carta
+    ingresada se encuentre en esa lista.
     """
     while True:
         entrada = input(mensaje)
@@ -53,6 +55,10 @@ def leer_cartas(mensaje, cantidad):
                 print(f"La carta '{p}' no es válida.")
                 valido = False
                 break
+            if allowed is not None and carta not in allowed:
+                print(f"La carta {carta} no está disponible (ya se usó o no está en la baraja).")
+                valido = False
+                break
             cartas.append(carta)
         if valido:
             return cartas
@@ -60,284 +66,246 @@ def leer_cartas(mensaje, cantidad):
 # ===================================
 # Funciones para el juego y el estado
 # ===================================
-
 def inicializar_baraja():
-    """
-    Inicializa la baraja española de 40 cartas.
-    """
-    baraja = []
-    for palo in ('O','C','E','B'):
-        for valor in range(1, 11):
-            baraja.append((valor, palo))
-    return baraja
+    """ Inicializa la baraja española de 40 cartas. """
+    return [(valor, palo) for palo in ('O', 'C', 'E', 'B') for valor in range(1, 11)]
 
 def remover_cartas(baraja, cartas_a_remover):
-    """
-    Devuelve una copia de la baraja sin las cartas indicadas.
-    """
-    nueva_baraja = baraja.copy()
+    """ Devuelve una copia de la baraja sin las cartas indicadas. """
+    nueva = baraja.copy()
     for c in cartas_a_remover:
-        if c in nueva_baraja:
-            nueva_baraja.remove(c)
-    return nueva_baraja
+        if c in nueva:
+            nueva.remove(c)
+    return nueva
 
 # ====================================
-# Funciones para sugerir jugadas
+# Funciones para la evaluación y sugerencia
 # ====================================
-
-def suma_escoba(carta, lista_cartas):
+def puntos_cartas(cartas, escobas=0):
     """
-    Retorna la suma de la carta y el total de los valores de la lista.
-    """
-    return carta[0] + sum(c[0] for c in lista_cartas)
-
-def subconjuntos(lista):
-    """
-    Genera todos los subconjuntos no vacíos de la lista.
-    """
-    resultado = []
-    n = len(lista)
-    def rec(i, actual):
-        if actual:
-            resultado.append(actual)
-        for j in range(i, n):
-            rec(j+1, actual + [lista[j]])
-    rec(0, [])
-    return resultado
-
-def jugadas_validas(mano, mesa):
-    """
-    Para cada carta de la mano, retorna las combinaciones de la mesa que sumen 15.
-    Cada jugada se expresa como (carta, combo, es_escoba). Si no hay combinación, se registra
-    como descarte.
-    """
-    jugadas = []
-    for carta in mano:
-        posibles = []
-        for combo in subconjuntos(mesa):
-            if suma_escoba(carta, combo) == 15:
-                posibles.append(combo)
-        if posibles:
-            for combo in posibles:
-                es_escoba = (len(combo) == len(mesa))
-                jugadas.append((carta, combo, es_escoba))
-        else:
-            jugadas.append((carta, [], False))
-    return jugadas
-
-def puntos_cartas(cartas, cont_cartas=0, cont_sietes=0, cont_oros=0):
-    """
-    Calcula el puntaje de las cartas aplicando:
-      - 1/21 por carta (hasta 21),
-      - 1/3 por carta con valor 7 (hasta 3),
-      - 1/6 por carta de oros (hasta 6),
-      - y, si es 7 de oros, 1 adicional.
-    Se respetan los límites acumulados.
-    """
-    pts = 0.0
-    for c in cartas:
-        if cont_cartas < 21:
-            pts += 1.0 / 21
-            cont_cartas += 1
-        if c[0] == 7 and cont_sietes < 3:
-            pts += 1.0 / 3
-            cont_sietes += 1
-        if c[1] == 'O' and cont_oros < 6:
-            pts += 1.0 / 6
-            cont_oros += 1
-        if c == (7, 'O'):
-            pts += 1.0
-    return pts
-
-def detalle_puntuacion(cartas, escobas):
-    """
-    Calcula el desglose de la puntuación obtenido de las cartas y escobas.
-    Devuelve un diccionario con: "cartas", "velo", "sietes", "oros", "escobas" y "total".
+    Calcula el puntaje de las cartas aplicando las reglas de puntuación.
     """
     total_cartas = len(cartas)
     pts_cartas = min(total_cartas, 21) / 21
     pts_velo = sum(1 for c in cartas if c == (7, 'O'))
     pts_sietes = min(sum(1 for c in cartas if c[0] == 7 and c[1] != 'O'), 3) * (1/3)
     pts_oros = min(sum(1 for c in cartas if c[1] == 'O' and c != (7, 'O')), 6) * (1/6)
-    pts_total = pts_cartas + pts_velo + pts_sietes + pts_oros + escobas
-    return {"cartas": pts_cartas, "velo": pts_velo, "sietes": pts_sietes, "oros": pts_oros, "escobas": escobas, "total": pts_total}
+    return pts_cartas + pts_velo + pts_sietes + pts_oros + escobas
 
-# --------------------------------------------------------
-# Funciones para la estimación probabilística del oponente
-# --------------------------------------------------------
-
-def candidatos_oponente(estado):
+def detalle_puntuacion(cartas, escobas):
     """
-    Retorna la lista de cartas no vistas (no en mesa, mano o capturadas).
-    """
-    full = set(inicializar_baraja())
-    conocidos = set(estado['mesa'] + estado['mano_usuario'] +
-                    estado['capturadas_usuario'] + estado['capturadas_oponente'])
-    return list(full - conocidos)
-
-def evaluar_respuesta_oponente(estado):
-    """
-    Estima el potencial que el oponente podría obtener en su turno,
-    asumiendo que su mano se compone de cartas elegidas aleatoriamente de las no vistas.
-    """
-    candidatos = candidatos_oponente(estado)
-    potenciales = []
-    for c in candidatos:
-        jugadas = jugadas_validas([c], estado['mesa'])
-        if jugadas:
-            puntajes = [puntos_cartas(j[1]) + (1 if j[2] else 0) for j in jugadas]
-            potenciales.append(max(puntajes))
-        else:
-            potenciales.append(0)
-    return sum(potenciales) / len(potenciales) if potenciales else 0
-
-def copiar_estado(estado):
-    """
-    Retorna una copia superficial del estado.
+    Calcula el desglose de la puntuación.
     """
     return {
-        'baraja': estado['baraja'][:],
-        'mesa': estado['mesa'][:],
-        'mano_usuario': estado['mano_usuario'][:],
-        'capturadas_usuario': estado['capturadas_usuario'][:],
-        'capturadas_oponente': estado['capturadas_oponente'][:],
-        'escobas_usuario': estado.get('escobas_usuario', 0),
-        'escobas_oponente': estado.get('escobas_oponente', 0),
-        'last_capturador': estado.get('last_capturador', None)
+        "cartas": min(len(cartas), 21) / 21,
+        "velo": sum(1 for c in cartas if c == (7, 'O')),
+        "sietes": min(sum(1 for c in cartas if c[0] == 7 and c[1] != 'O'), 3) * (1/3),
+        "oros": min(sum(1 for c in cartas if c[1] == 'O' and c != (7, 'O')), 6) * (1/6),
+        "escobas": escobas,
+        "total": puntos_cartas(cartas, escobas)
     }
 
-# --------------------------------------------------------
-# Funciones para validar jugadas
-# --------------------------------------------------------
+def combinaciones_que_suman(cartas, objetivo):
+    """
+    Retorna una lista de combinaciones (listas) de cartas de 'cartas'
+    cuya suma de valores es igual a 'objetivo'.
+    """
+    resultados = []
+    def backtrack(start, current, suma):
+        if suma == objetivo:
+            resultados.append(current.copy())
+        elif suma > objetivo:
+            return
+        else:
+            for i in range(start, len(cartas)):
+                current.append(cartas[i])
+                backtrack(i+1, current, suma + cartas[i][0])
+                current.pop()
+    backtrack(0, [], 0)
+    return resultados
 
-def validar_jugada(carta, capturadas, mesa):
+def evaluar_movida(card, mesa, deck, movida):
     """
-    Valida la jugada del usuario comprobando que:
-      - Todas las cartas capturadas estén en la mesa.
-      - La suma (carta + capturadas) sea 15.
+    Evalúa una movida para una carta dada.
+    'movida' es una tupla (tipo, combinación) donde tipo es "captura" o "no captura".
+    Retorna (neto, puntos_jugador, expectativa_oponente, new_mesa)
+    
+    - En una jugada de captura se asume que se capturan las cartas indicadas y, si la mesa queda vacía,
+      se suma la bonificación de escoba.
+    - En una jugada de no captura, la carta se coloca sobre la mesa sin obtener puntos inmediatos.
     """
-    result = {"valid": True}
-    for card in capturadas:
-        if card not in mesa:
-            result["valid"] = False
-            result["error"] = f"La carta {card} no está en la mesa."
-            return result
-    if suma_escoba(carta, capturadas) != 15:
-        result["valid"] = False
-        result["error"] = f"La suma de la carta {carta} y las capturadas {capturadas} no es 15."
-        return result
-    return result
-
-def validar_jugada_oponente(carta_op, capturadas_op, mesa):
-    """
-    Valida la jugada del oponente comprobando:
-      - Si se capturó alguna carta, que todas estén en la mesa y la suma sea 15.
-      - Si no se capturó ninguna carta, se verifica si la carta permitiría capturar.
-        Si es así, se marca error (renuncia incorrecta) y se solicitan las combinaciones.
-        Si no permite captura, se acepta sin preguntar.
-    """
-    result = {"valid": True}
-    if capturadas_op:
-        for card in capturadas_op:
-            if card not in mesa:
-                result["valid"] = False
-                result["error"] = f"La carta {card} no está en la mesa."
-                return result
-        if suma_escoba(carta_op, capturadas_op) != 15:
-            result["valid"] = False
-            result["error"] = f"La suma de la carta {carta_op} y las capturadas {capturadas_op} no es 15."
-            return result
+    if movida[0] == "captura":
+        combo = movida[1]
+        new_mesa = [c for c in mesa if c not in combo]
+        puntos_jugador = puntos_cartas(combo + [card], 1 if len(new_mesa) == 0 else 0)
     else:
-        jugadas = jugadas_validas([carta_op], mesa)
-        valid_combos = [j[1] for j in jugadas if j[1]]
-        if valid_combos:
-            result["valid"] = False
-            result["error"] = "Renuncia incorrecta: existen combinaciones válidas."
-            result["renuncio"] = True
-            result["combinaciones"] = valid_combos
-            return result
-    return result
-
-# --------------------------------------------------------
-# Función de evaluación de jugadas (para sugerencias)
-# --------------------------------------------------------
-
-def evaluar_jugada(jugada, estado):
-    """
-    Evalúa una jugada potencial del usuario combinando:
-      - Beneficio inmediato (puntos de las cartas capturadas, +1 si es escoba).
-    Retorna el valor esperado neto.
-    (La heurística de ajustes en descartes se incluye en la selección de jugada sugerida.)
-    """
-    carta, cap, es_escoba = jugada
-    pts_inmediatos = puntos_cartas(cap)
-    if es_escoba:
-        pts_inmediatos += 1.0
-    estado_temp = copiar_estado(estado)
-    actualizar_estado_jugada(estado_temp, jugada, jugador='usuario')
-    potencial_oponente = evaluar_respuesta_oponente(estado_temp)
-    return pts_inmediatos - potencial_oponente
+        new_mesa = mesa + [card]
+        puntos_jugador = 0
+    total_oponente = 0
+    if deck:
+        for op_card in deck:
+            target = 15 - op_card[0]
+            combos = combinaciones_que_suman(new_mesa, target)
+            mejor = 0
+            for combo in combos:
+                new_mesa_op = [c for c in new_mesa if c not in combo]
+                pts = puntos_cartas(combo + [op_card], 1 if len(new_mesa_op) == 0 else 0)
+                if pts > mejor:
+                    mejor = pts
+            total_oponente += mejor
+        expectativa_oponente = total_oponente / len(deck)
+    else:
+        expectativa_oponente = 0
+    neto = puntos_jugador - expectativa_oponente
+    return neto, puntos_jugador, expectativa_oponente, new_mesa
 
 def sugerir_mejor_jugada(estado):
     """
-    Genera las jugadas válidas de la mano del usuario sobre la mesa, las evalúa
-    y retorna la de mayor valor.
+    Sugiere la mejor jugada para el usuario evaluando, para cada carta en mano,
+    únicamente las jugadas de captura (si existen) y, en caso de que no exista captura,
+    la opción de no capturar.
+    
+    Se numeran las opciones y se permite elegir la estrategia mediante su número,
+    con la opción por defecto (al pulsar Enter) siendo la de mayor valor neto.
+    
+    Devuelve la jugada elegida y el nuevo estado de la mesa tras ejecutar la jugada.
+    La jugada se representa como una tupla (tipo, combinación, carta).
     """
-    jugadas = jugadas_validas(estado['mano_usuario'], estado['mesa'])
-    if not jugadas:
-        return None
-    evaluaciones = [evaluar_jugada(j, estado) for j in jugadas]
-    mejor = jugadas[evaluaciones.index(max(evaluaciones))]
-    return mejor
-
-# ====================================
-# Funciones para actualizar el estado
-# ====================================
-
-def actualizar_estado_jugada(estado, jugada, jugador='usuario'):
-    """
-    Actualiza el estado tras una jugada:
-      - Agrega la carta jugada y las capturadas al registro del jugador.
-      - Actualiza la mesa (elimina las cartas capturadas o, si es descarte, agrega la carta jugada).
-      - Si el jugador es el usuario, elimina la carta jugada de su mano.
-      - Si es escoba, incrementa el contador.
-      - Actualiza 'last_capturador' si hubo captura.
-    """
-    carta, cap, es_escoba = jugada
-    if cap:
-        estado["last_capturador"] = jugador
-    estado["capturadas_" + jugador].append(carta)
-    if cap:
-        estado["capturadas_" + jugador].extend(cap)
-    if cap:
-        for c in cap:
-            if c in estado["mesa"]:
-                estado["mesa"].remove(c)
+    evaluaciones_totales = []
+    for card in estado['mano_usuario']:
+        target = 15 - card[0]
+        capture_combos = combinaciones_que_suman(estado['mesa'], target)
+        if capture_combos:
+            moves = [("captura", combo, card) for combo in capture_combos]
+        else:
+            moves = [("no captura", None, card)]
+        for move in moves:
+            neto, pts, exp_op, new_mesa = evaluar_movida(card, estado['mesa'], estado['baraja'], (move[0], move[1]))
+            evaluaciones_totales.append((move, neto, pts, exp_op, new_mesa))
+    if evaluaciones_totales:
+        best = max(evaluaciones_totales, key=lambda x: x[1])
+        print("\nEvaluación de jugadas posibles:")
+        for i, eval_item in enumerate(evaluaciones_totales):
+            move, neto, pts, exp_op, new_mesa = eval_item
+            escoba_str = " (escoba)" if move[0]=="captura" and not new_mesa else ""
+            if move[0] == "captura":
+                print(f"{i+1}. Con la carta {move[2]}: Capturar {move[1]}{escoba_str} -> Puntos usuario: {pts:.2f}, Expectativa oponente: {exp_op:.2f}, Valor neto: {neto:.2f}")
+            else:
+                print(f"{i+1}. Con la carta {move[2]}: No capturar -> Puntos usuario: {pts:.2f}, Expectativa oponente: {exp_op:.2f}, Valor neto: {neto:.2f}")
+        default_option = evaluaciones_totales.index(best) + 1
+        choice = input(f"Elige la opción (presiona Enter para la opción {default_option}): ")
+        if choice.strip() == "":
+            chosen = best
+        else:
+            try:
+                index = int(choice) - 1
+                if index < 0 or index >= len(evaluaciones_totales):
+                    print("Opción no válida, se escoge la opción por defecto.")
+                    chosen = best
+                else:
+                    chosen = evaluaciones_totales[index]
+            except:
+                print("Entrada no válida, se escoge la opción por defecto.")
+                chosen = best
+        move, neto, pts, exp_op, new_mesa = chosen
+        escoba_str = " (escoba)" if move[0]=="captura" and not new_mesa else ""
+        if move[0] == "captura":
+            print(f"Sugerencia: Jugar la carta {move[2]} capturando {move[1]}{escoba_str}\n")
+        else:
+            print(f"Sugerencia: Jugar la carta {move[2]} sin capturar (colocándola en la mesa)\n")
+        return move, new_mesa
     else:
-        estado["mesa"].append(carta)
-    if jugador == "usuario":
-        if carta in estado["mano_usuario"]:
-            estado["mano_usuario"].remove(carta)
-    if es_escoba:
-        key = "escobas_" + jugador
-        estado[key] = estado.get(key, 0) + 1
-    return estado
+        print("No hay jugadas evaluables.")
+        return None, estado['mesa']
 
-def actualizar_estado_oponente(estado, carta_jugada, cartas_capturadas):
+def sugerir_movida_oponente(op_card, mesa, deck):
     """
-    Actualiza el estado con la jugada del oponente.
+    Evalúa las posibles jugadas para el oponente, dada su carta, la mesa y el mazo.
+    Se generan todas las opciones de captura (si existen) y se añade la opción "no captura".
+    Devuelve una lista de evaluaciones: cada elemento es una tupla
+       (move, neto, puntos_oponente, expectativa_usuario, new_mesa)
+    donde move es una tupla (tipo, combinación, op_card).
     """
-    es_escoba = (len(cartas_capturadas) == len(estado["mesa"]))
-    jugada = (carta_jugada, cartas_capturadas, es_escoba)
-    actualizar_estado_jugada(estado, jugada, jugador="oponente")
-    return estado
+    target = 15 - op_card[0]
+    capture_combos = combinaciones_que_suman(mesa, target)
+    moves = []
+    for combo in capture_combos:
+        moves.append(("captura", combo, op_card))
+    moves.append(("no captura", None, op_card))
+    evaluaciones = []
+    for move in moves:
+        neto, pts, exp_user, new_mesa = evaluar_movida(op_card, mesa, deck, (move[0], move[1]))
+        evaluaciones.append((move, neto, pts, exp_user, new_mesa))
+    return evaluaciones
+
+def elegir_captura_usuario(estado):
+    """
+    Permite al usuario elegir entre las jugadas de captura disponibles con sus cartas,
+    cuando el oponente, teniendo posibilidad, renuncia a capturar.
+    Se muestran las opciones numeradas; la opción por defecto (al pulsar Enter) será la de mayor valor neto.
+    Una vez elegida la opción, se actualiza el estado:
+      - Se elimina la carta jugada de la mano.
+      - Se retiran de la mesa las cartas capturadas.
+      - Se añaden las cartas capturadas al montón del usuario.
+      - Se actualiza el contador de escobas si la mesa queda vacía.
+      - Se actualiza el último capturador.
+    """
+    evaluaciones = []
+    for card in estado['mano_usuario']:
+        target = 15 - card[0]
+        combos = combinaciones_que_suman(estado['mesa'], target)
+        if combos:
+            for combo in combos:
+                neto, pts, exp_op, new_mesa = evaluar_movida(card, estado['mesa'], estado['baraja'], ("captura", combo))
+                evaluaciones.append((("captura", combo, card), neto, pts, exp_op, new_mesa))
+    if not evaluaciones:
+        print("No hay posibilidades de captura para el usuario.")
+        return
+    if len(evaluaciones) == 1:
+        chosen = evaluaciones[0]
+        move, neto, pts, exp_op, new_mesa = chosen
+        escoba_str = " (escoba)" if not new_mesa else ""
+        print(f"Captura automática para el usuario: Jugar la carta {move[2]} capturando {move[1]}{escoba_str}")
+    else:
+        print("\nEvaluación de jugadas de captura disponibles para el usuario:")
+        for i, eval_item in enumerate(evaluaciones):
+            move, neto, pts, exp_op, new_mesa = eval_item
+            escoba_str = " (escoba)" if not new_mesa else ""
+            print(f"{i+1}. Con la carta {move[2]}: Capturar {move[1]}{escoba_str} -> Puntos usuario: {pts:.2f}, Valor neto: {neto:.2f}")
+        best = max(evaluaciones, key=lambda x: x[1])
+        default_option = evaluaciones.index(best) + 1
+        choice = input(f"Elige la opción de captura (presiona Enter para la opción {default_option}): ")
+        if choice.strip() == "":
+            chosen = best
+        else:
+            try:
+                index = int(choice) - 1
+                if index < 0 or index >= len(evaluaciones):
+                    print("Opción no válida, se escoge la opción por defecto.")
+                    chosen = best
+                else:
+                    chosen = evaluaciones[index]
+            except:
+                print("Entrada no válida, se escoge la opción por defecto.")
+                chosen = best
+        move, neto, pts, exp_op, new_mesa = chosen
+        escoba_str = " (escoba)" if not new_mesa else ""
+        print(f"Captura elegida para el usuario: Jugar la carta {move[2]} capturando {move[1]}{escoba_str}")
+    card = move[2]
+    captured = [c for c in estado['mesa'] if c not in new_mesa] + [card]
+    if card in estado['mano_usuario']:
+        estado['mano_usuario'].remove(card)
+    estado['capturadas_usuario'].extend(captured)
+    if not new_mesa:
+        estado['escobas_usuario'] += 1
+    estado['mesa'] = new_mesa
+    estado['last_capturador'] = "usuario"
 
 # ===============================
 # Función principal: escoba()
 # ===============================
-
 def escoba():
-    # Inicialización del estado
+    """ Función principal del juego. """
     baraja = inicializar_baraja()
     estado = {
         'baraja': baraja,
@@ -349,281 +317,155 @@ def escoba():
         'escobas_oponente': 0,
         'last_capturador': None
     }
+
+    user_inicia = input("¿Tienes tú la mano (S/N)? ").strip().upper() == 'S'
     
-    # Determinar quién inicia
-    user_inicia = (input("¿Tienes tú la mano (S/N)? ").strip().upper() == 'S')
-    
-    # Primera mano: se piden las 4 cartas de la mesa y las 3 cartas del usuario
-    estado['mesa'] = leer_cartas("Introduce las 4 cartas de la mesa (separadas por comas): ", 4)
+    # Lectura inicial: se validan las cartas usando la baraja completa.
+    estado['mesa'] = leer_cartas("Introduce las 4 cartas de la mesa: ", 4, allowed=estado['baraja'])
     estado['baraja'] = remover_cartas(estado['baraja'], estado['mesa'])
-    estado['mano_usuario'] = leer_cartas("Introduce tus 3 cartas (separadas por comas): ", 3)
+    estado['mano_usuario'] = leer_cartas("Introduce tus 3 cartas: ", 3, allowed=estado['baraja'])
     estado['baraja'] = remover_cartas(estado['baraja'], estado['mano_usuario'])
-    
-    # Bucle principal de la partida
+
     while True:
         print("\n--- Nueva jugada ---")
-        print("Mesa actual:", estado['mesa'])
-        print("Tu mano:", estado['mano_usuario'])
+        print(f"Mesa: {estado['mesa']}")
+        print(f"Tu mano: {estado['mano_usuario']}")
         
-        # Mostrar situación de puntos
-        consolidados_usuario = puntos_cartas(estado['capturadas_usuario']) + estado['escobas_usuario']
-        consolidados_oponente = puntos_cartas(estado['capturadas_oponente']) + estado['escobas_oponente']
-        jugadas_user = jugadas_validas(estado['mano_usuario'], estado['mesa'])
-        potencial_usuario = max([evaluar_jugada(j, estado) for j in jugadas_user]) if jugadas_user else 0
-        potencial_oponente = evaluar_respuesta_oponente(estado)
-        print("Situación de puntos:")
-        print(f"  Consolidados: Tú = {consolidados_usuario:.2f} | Oponente = {consolidados_oponente:.2f}")
-        print(f"  Potenciales:  Tú = {potencial_usuario:.2f} | Oponente = {potencial_oponente:.2f}")
-        
-        if user_inicia:
-            # Turno del usuario
-            jugada_sugerida = sugerir_mejor_jugada(estado)
-            if jugada_sugerida:
-                carta_sug, capturadas_sug, es_escoba = jugada_sugerida
-                if es_escoba:
-                    print(f"Sugerencia: Jugar la carta {carta_sug} para capturar {capturadas_sug} (¡Escoba!)")
-                elif capturadas_sug:
-                    print(f"Sugerencia: Jugar la carta {carta_sug} para capturar {capturadas_sug}")
-                else:
-                    print(f"Sugerencia: Descartar la carta {carta_sug}")
-            else:
-                print("No se encontraron jugadas válidas.")
-            respuesta = input("¿Validas esta jugada? (S/n): ").strip()
-            if respuesta == "":
-                respuesta = "S"
-            respuesta = respuesta.upper()
-            if respuesta == "S":
-                jugada = jugada_sugerida
-            else:
-                carta_str = input("Introduce la carta que juegas: ")
-                carta_jugada = parsear_carta(carta_str)
-                if carta_jugada is None or carta_jugada not in estado['mano_usuario']:
-                    print("Carta no válida o no en tu mano. Se usará la jugada sugerida.")
-                    jugada = jugada_sugerida
-                else:
-                    # Si la carta no permite captura, se asume descarte sin preguntar capturas
-                    jugadas_para_carta = jugadas_validas([carta_jugada], estado['mesa'])
-                    if all(j[1] == [] for j in jugadas_para_carta):
-                        jugada = (carta_jugada, [], False)
-                    elif len([j for j in jugadas_para_carta if j[1]]) == 1:
-                        jugada = [j for j in jugadas_para_carta if j[1]][0]
-                    else:
-                        capturadas = []
-                        s = input("Introduce las cartas que capturas (separadas por comas): ").strip()
-                        if s:
-                            for p in s.split(','):
-                                x = parsear_carta(p)
-                                if x is None:
-                                    print(f"La carta '{p}' es inválida. Se usará la jugada sugerida.")
-                                    jugada = jugada_sugerida
-                                    break
-                                else:
-                                    capturadas.append(x)
-                        else:
-                            capturadas = []
-                        validacion = validar_jugada(carta_jugada, capturadas, estado['mesa'])
-                        if not validacion["valid"]:
-                            print("Error en tu jugada:", validacion["error"])
-                            print("Se usará la jugada sugerida.")
-                            jugada = jugada_sugerida
-                        else:
-                            es_escoba = (len(capturadas) == len(estado['mesa']))
-                            jugada = (carta_jugada, capturadas, es_escoba)
-            actualizar_estado_jugada(estado, jugada, jugador='usuario')
-            
-            print("\nDespués de tu jugada:")
-            print("Mesa actual:", estado['mesa'])
-            consolidados_usuario = puntos_cartas(estado['capturadas_usuario']) + estado['escobas_usuario']
-            consolidados_oponente = puntos_cartas(estado['capturadas_oponente']) + estado['escobas_oponente']
-            jugadas_user = jugadas_validas(estado['mano_usuario'], estado['mesa'])
-            potencial_usuario = max([evaluar_jugada(j, estado) for j in jugadas_user]) if jugadas_user else 0
-            potencial_oponente = evaluar_respuesta_oponente(estado)
-            print("Situación de puntos:")
-            print(f"  Consolidados: Tú = {consolidados_usuario:.2f} | Oponente = {consolidados_oponente:.2f}")
-            print(f"  Potenciales:  Tú = {potencial_usuario:.2f} | Oponente = {potencial_oponente:.2f}")
-            
-            # Turno del oponente
-            print("\nAhora, es el turno del oponente.")
-            while True:
-                carta_op_str = input("Introduce la carta que jugó el oponente: ")
-                carta_op = parsear_carta(carta_op_str)
-                if carta_op is None:
-                    print("Carta del oponente no válida. Inténtalo de nuevo.")
-                    continue
-                s = input("Introduce las cartas que capturó el oponente (separadas por comas; vacío si no capturó): ").strip()
-                capturadas_op = []
-                if s:
-                    error_en_cap = False
-                    for p in s.split(','):
-                        x = parsear_carta(p)
-                        if x is None:
-                            print(f"La carta '{p}' es inválida. Inténtalo de nuevo.")
-                            error_en_cap = True
-                            break
-                        else:
-                            capturadas_op.append(x)
-                    if error_en_cap:
-                        continue
-                valid_op = validar_jugada_oponente(carta_op, capturadas_op, estado['mesa'])
-                if not valid_op["valid"]:
-                    print("Error en la jugada del oponente:", valid_op["error"])
-                    if valid_op.get("renuncio", False):
-                        print("Las combinaciones válidas que podía capturar son:")
-                        for i, combo in enumerate(valid_op["combinaciones"], 1):
-                            print(f"  {i}: {combo} (suma: {suma_escoba(carta_op, combo)})")
-                        try:
-                            idx = input("Elige el número de la combinación correcta (1/n): ").strip()
-                            if idx == "":
-                                idx = "1"
-                            idx = int(idx)
-                        except:
-                            idx = 1
-                        if 1 <= idx <= len(valid_op["combinaciones"]):
-                            capturadas_op = valid_op["combinaciones"][idx-1]
-                            break
-                        else:
-                            print("Opción inválida. Inténtalo de nuevo.")
-                    else:
-                        print("Inténtalo de nuevo la jugada del oponente.")
-                        continue
-                else:
-                    break
-            actualizar_estado_oponente(estado, carta_op, capturadas_op)
-            
+        # Sugerencia y ejecución de la jugada del usuario.
+        move_user, new_mesa = sugerir_mejor_jugada(estado)
+        if move_user is None:
+            print("No hay jugadas evaluables. Pasando turno.")
         else:
-            # Caso en que el oponente inicia
-            print("El oponente tiene la mano. Se espera su jugada.")
-            while True:
-                carta_op_str = input("Introduce la carta que jugó el oponente: ")
-                carta_op = parsear_carta(carta_op_str)
-                if carta_op is None:
-                    print("Carta del oponente no válida. Inténtalo de nuevo.")
-                    continue
-                s = input("Introduce las cartas que capturó el oponente (separadas por comas; vacío si no capturó): ").strip()
-                capturadas_op = []
-                if s:
-                    error_en_cap = False
-                    for p in s.split(','):
-                        x = parsear_carta(p)
-                        if x is None:
-                            print(f"La carta '{p}' es inválida. Inténtalo de nuevo.")
-                            error_en_cap = True
-                            break
-                        else:
-                            capturadas_op.append(x)
-                    if error_en_cap:
-                        continue
-                valid_op = validar_jugada_oponente(carta_op, capturadas_op, estado['mesa'])
-                if not valid_op["valid"]:
-                    print("Error en la jugada del oponente:", valid_op["error"])
-                    if valid_op.get("renuncio", False):
-                        print("Las combinaciones válidas que podía capturar son:")
-                        for i, combo in enumerate(valid_op["combinaciones"], 1):
-                            print(f"  {i}: {combo} (suma: {suma_escoba(carta_op, combo)})")
-                        try:
-                            idx = input("Elige el número de la combinación correcta (1/n): ").strip()
-                            if idx == "":
-                                idx = "1"
-                            idx = int(idx)
-                        except:
-                            idx = 1
-                        if 1 <= idx <= len(valid_op["combinaciones"]):
-                            capturadas_op = valid_op["combinaciones"][idx-1]
-                            break
-                        else:
-                            print("Opción inválida. Inténtalo de nuevo.")
-                    else:
-                        print("Inténtalo de nuevo la jugada del oponente.")
-                        continue
-                else:
-                    break
-            actualizar_estado_oponente(estado, carta_op, capturadas_op)
-            
-            # Turno del usuario
-            jugada_sugerida = sugerir_mejor_jugada(estado)
-            if jugada_sugerida:
-                print("Sugerencia:", jugada_sugerida)
-            respuesta = input("¿Validas la jugada? (S/n): ").strip()
-            if respuesta == "":
-                respuesta = "S"
-            respuesta = respuesta.upper()
-            if respuesta == "S":
-                jugada = jugada_sugerida
+            card = move_user[2]
+            if move_user[0] == "captura":
+                escoba_str = " (escoba)" if not new_mesa else ""
+                print(f"Ejecutando jugada: Jugar la carta {card} capturando {move_user[1]}{escoba_str}")
+                estado['mano_usuario'].remove(card)
+                captured = [c for c in estado['mesa'] if c not in new_mesa] + [card]
+                estado['capturadas_usuario'].extend(captured)
+                estado['mesa'] = new_mesa
+                estado['last_capturador'] = "usuario"
+                if not estado['mesa']:
+                    estado['escobas_usuario'] += 1
             else:
-                carta_str = input("Introduce la carta que juegas: ")
-                carta_jugada = parsear_carta(carta_str)
-                if carta_jugada is None or carta_jugada not in estado["mano_usuario"]:
-                    print("Carta no válida o no en tu mano. Se usará la sugerida.")
-                    jugada = jugada_sugerida
-                else:
-                    jugadas_para_carta = jugadas_validas([carta_jugada], estado["mesa"])
-                    if all(j[1] == [] for j in jugadas_para_carta):
-                        jugada = (carta_jugada, [], False)
-                    elif len([j for j in jugadas_para_carta if j[1]]) == 1:
-                        jugada = [j for j in jugadas_para_carta if j[1]][0]
-                    else:
-                        capturadas = []
-                        s = input("Introduce las cartas que capturas (separadas por comas): ").strip()
-                        if s:
-                            for p in s.split(','):
-                                x = parsear_carta(p)
-                                if x is None:
-                                    print(f"La carta '{p}' es inválida. Se usará la jugada sugerida.")
-                                    jugada = jugada_sugerida
-                                    break
-                                else:
-                                    capturadas.append(x)
-                        else:
-                            capturadas = []
-                        validacion = validar_jugada(carta_jugada, capturadas, estado["mesa"])
-                        if not validacion["valid"]:
-                            print("Error en tu jugada:", validacion["error"])
-                            print("Se usará la jugada sugerida.")
-                            jugada = jugada_sugerida
-                        else:
-                            jugada = (carta_jugada, capturadas, len(capturadas)==len(estado["mesa"]))
-                actualizar_estado_jugada(estado, jugada, jugador="usuario")
+                print(f"Ejecutando jugada: Jugar la carta {card} sin capturar, dejando la mesa en estado {new_mesa}")
+                estado['mano_usuario'].remove(card)
+                estado['mesa'] = new_mesa
         
-        # Si no quedan cartas en la mano y la baraja está vacía, se asume última mano
-        if not estado["mano_usuario"]:
-            if len(estado["baraja"]) == 0:
-                if estado["mesa"] and estado.get("last_capturador") is not None:
-                    print("\nÚltima mano: Se asignan las cartas de la mesa a", estado["last_capturador"])
-                    if estado["last_capturador"] == "usuario":
-                        estado["capturadas_usuario"].extend(estado["mesa"])
+        # Turno del oponente:
+        op_carta = leer_cartas("Introduce la carta que juega tu oponente: ", 1, allowed=estado['baraja'])[0]
+        estado['baraja'] = remover_cartas(estado['baraja'], [op_carta])
+        evaluaciones_op = sugerir_movida_oponente(op_carta, estado['mesa'], estado['baraja'])
+        if evaluaciones_op:
+            if len(evaluaciones_op) == 1:
+                chosen_op = evaluaciones_op[0]
+                move, neto, pts, exp_user, new_mesa_op = chosen_op
+                target = 15 - op_carta[0]
+                print("\nÚnica opción para el oponente, se ejecuta automáticamente:")
+                if not combinaciones_que_suman(estado['mesa'], target):
+                    print(f"El oponente ejecuta la jugada: Jugar la carta {move[2]} sin capturar")
+                    print("El oponente no puede capturar.")
+                else:
+                    if move[0] == "captura":
+                        escoba_str = " (escoba)" if not new_mesa_op else ""
+                        print(f"El oponente ejecuta la jugada: Jugar la carta {move[2]} capturando {move[1]}{escoba_str}")
                     else:
-                        estado["capturadas_oponente"].extend(estado["mesa"])
-                    estado["mesa"] = []
-                print("Fin de la partida.")
-                break
+                        print(f"El oponente ejecuta la jugada: Jugar la carta {move[2]} sin capturar")
+                        print("El oponente renuncia a capturar.")
             else:
-                nuevas = leer_cartas("Introduce tus 3 nuevas cartas: ", 3)
+                best_op = max(evaluaciones_op, key=lambda x: x[1])
+                print("\nEvaluación de jugadas posibles para el oponente:")
+                for i, eval_item in enumerate(evaluaciones_op):
+                    move, neto, pts, exp_user, _ = eval_item
+                    escoba_str = " (escoba)" if move[0]=="captura" and not _ else ""
+                    if move[0] == "captura":
+                        print(f"{i+1}. Con la carta {move[2]}: Capturar {move[1]}{escoba_str} -> Puntos oponente: {pts:.2f}, Expectativa usuario: {exp_user:.2f}, Valor neto: {neto:.2f}")
+                    else:
+                        print(f"{i+1}. Con la carta {move[2]}: No capturar -> Puntos oponente: {pts:.2f}, Expectativa usuario: {exp_user:.2f}, Valor neto: {neto:.2f}")
+                default_option = evaluaciones_op.index(best_op) + 1
+                choice = input(f"Elige la opción que tomó tu oponente (presiona Enter para la opción {default_option}): ")
+                if choice.strip() == "":
+                    chosen_op = best_op
+                else:
+                    try:
+                        index = int(choice) - 1
+                        if index < 0 or index >= len(evaluaciones_op):
+                            print("Opción no válida, se escoge la opción por defecto.")
+                            chosen_op = best_op
+                        else:
+                            chosen_op = evaluaciones_op[index]
+                    except:
+                        print("Entrada no válida, se escoge la opción por defecto.")
+                        chosen_op = best_op
+            move, neto, pts, exp_user, new_mesa_op = chosen_op
+            if move[0] == "captura":
+                escoba_str = " (escoba)" if not new_mesa_op else ""
+                print(f"El oponente ejecuta la jugada: Jugar la carta {move[2]} capturando {move[1]}{escoba_str}")
+                capturadas = [c for c in estado['mesa'] if c not in new_mesa_op] + [op_carta]
+                estado['capturadas_oponente'].extend(capturadas)
+                estado['mesa'] = new_mesa_op
+                estado['last_capturador'] = "oponente"
+                if not estado['mesa']:
+                    estado['escobas_oponente'] += 1
+            else:
+                target = 15 - op_carta[0]
+                if not combinaciones_que_suman(estado['mesa'], target):
+                    print(f"El oponente ejecuta la jugada: Jugar la carta {move[2]} sin capturar")
+                    print("El oponente no puede capturar.")
+                else:
+                    print(f"El oponente ejecuta la jugada: Jugar la carta {move[2]} sin capturar")
+                    print("El oponente renuncia a capturar.")
+                estado['mesa'].append(op_carta)
+                if combinaciones_que_suman(estado['mesa'], target):
+                    elegir_captura_usuario(estado)
+        else:
+            estado['mesa'].append(op_carta)
+        
+        # Mostrar siempre el estado actual de la mesa.
+        print(f"\nEstado actual de la mesa: {estado['mesa']}")
+        
+        # Comprobación del final de la partida:
+        # Si no quedan cartas en la mano y en la baraja, se asignan las cartas que queden en la mesa
+        # al último jugador que capturó y se muestra un mensaje.
+        if not estado["mano_usuario"] and not estado["baraja"]:
+            if estado["mesa"]:
+                if estado["last_capturador"] == "usuario":
+                    print(f"\nÚltima mano: Ganas las cartas {estado['mesa']} que quedan en la mesa.")
+                    estado["capturadas_usuario"].extend(estado["mesa"])
+                elif estado["last_capturador"] == "oponente":
+                    print(f"\nÚltima mano: El oponente gana las cartas {estado['mesa']} que quedan en la mesa.")
+                    estado["capturadas_oponente"].extend(estado["mesa"])
+                else:
+                    print("\nÚltima mano: No se asignan cartas, pues no hubo capturador final.")
+                estado["mesa"] = []
+            break
+        
+        # Si se han acabado las cartas de la mano, se piden nuevas cartas SOLO si quedan en la baraja.
+        if not estado["mano_usuario"]:
+            if estado["baraja"]:
+                num_cards = 3 if len(estado["baraja"]) >= 3 else len(estado["baraja"])
+                nuevas = leer_cartas(f"Introduce tus {num_cards} nuevas cartas: ", num_cards, allowed=estado["baraja"])
                 estado["mano_usuario"] = nuevas
                 estado["baraja"] = remover_cartas(estado["baraja"], nuevas)
-                print("Tu mano:", estado["mano_usuario"])
-        
-        # Mostrar la puntuación final de la ronda
-        consolidados_usuario = puntos_cartas(estado["capturadas_usuario"]) + estado["escobas_usuario"]
-        consolidados_oponente = puntos_cartas(estado["capturadas_oponente"]) + estado["escobas_oponente"]
-        print("\nPuntos finales de la ronda:")
-        print(f"  Consolidados: Tú = {consolidados_usuario:.2f} | Oponente = {consolidados_oponente:.2f}")
+            else:
+                # Si no quedan cartas en la baraja, se procede a finalizar la partida.
+                if estado["mesa"]:
+                    if estado["last_capturador"] == "usuario":
+                        print(f"\nÚltima mano: Ganas las cartas {estado['mesa']} que quedan en la mesa.")
+                        estado["capturadas_usuario"].extend(estado["mesa"])
+                    elif estado["last_capturador"] == "oponente":
+                        print(f"\nÚltima mano: El oponente gana las cartas {estado['mesa']} que quedan en la mesa.")
+                        estado["capturadas_oponente"].extend(estado["mesa"])
+                    else:
+                        print("\nÚltima mano: No se asignan cartas, pues no hubo capturador final.")
+                    estado["mesa"] = []
+                break
     
-    # Al finalizar la partida, mostrar el desglose final de la puntuación
+    # Mostrar la puntuación final y el detalle.
     print("\n--- Puntuación Final ---")
-    detalle_usuario = detalle_puntuacion(estado["capturadas_usuario"], estado["escobas_usuario"])
-    detalle_oponente = detalle_puntuacion(estado["capturadas_oponente"], estado["escobas_oponente"])
-    print("Tú: Total =", round(detalle_usuario["total"], 2),
-          " (Cartas =", round(detalle_usuario["cartas"], 2),
-          ", Velo =", round(detalle_usuario["velo"], 2),
-          ", Sietes =", round(detalle_usuario["sietes"], 2),
-          ", Oros =", round(detalle_usuario["oros"], 2),
-          ", Escobas =", detalle_usuario["escobas"], ")")
-    print("Oponente: Total =", round(detalle_oponente["total"], 2),
-          " (Cartas =", round(detalle_oponente["cartas"], 2),
-          ", Velo =", round(detalle_oponente["velo"], 2),
-          ", Sietes =", round(detalle_oponente["sietes"], 2),
-          ", Oros =", round(detalle_oponente["oros"], 2),
-          ", Escobas =", detalle_oponente["escobas"], ")")
+    for jugador in ["usuario", "oponente"]:
+        detalle = detalle_puntuacion(estado[f"capturadas_{jugador}"], estado[f"escobas_{jugador}"])
+        print(f"{jugador.capitalize()}: {detalle['total']:.2f} puntos (Cartas: {detalle['cartas']:.2f}, Velo: {detalle['velo']:.2f}, Sietes: {detalle['sietes']:.2f}, Oros: {detalle['oros']:.2f}, Escobas: {detalle['escobas']})")
 
 if __name__ == '__main__':
     escoba()
