@@ -2,14 +2,21 @@
 """
 Programa Escoba
 Con validación de jugadas, sugerencia de la mejor jugada contra el oponente
-(incluyendo razonamiento a 1 jugada, la respuesta del oponente, la elección interactiva
-de captura para el usuario cuando el oponente renuncia a capturar) y desglose final de la puntuación.
+(incluyendo razonamiento a 1 jugada, respuesta interactiva y elección de captura
+para el usuario cuando el oponente renuncia a capturar), detección del final del juego
+y cómputo de puntos por categorías (velo, sietes, oros y cartas).
 
 Cada carta aporta:
   - 1/21 por carta (hasta 21),
   - 1/3 por carta con valor 7 (hasta 3),
   - 1/6 por carta de oros (hasta 6),
   - y, si es 7 de oros (velo), 1 adicional.
+
+Además, fuera de las escobas, en cada categoría (velo, sietes, oros, cartas) gana el que más cartas haya capturado;
+en caso de empate, nadie obtiene puntos en esa categoría. Así, el ganador de cada categoría (si hay uno)
+sólo obtiene 1 punto en esa categoría. La única categoría que puede dar más de 1 punto es la de las escobas.
+Nota: El velo cuenta para las 4 categorías; los sietes que no sean el velo cuentan para sietes y cartas;
+los oros que no sean el velo cuentan para oros y cartas; el resto de cartas sólo cuentan para cartas.
 """
 
 # ===============================
@@ -38,8 +45,7 @@ def parsear_carta(carta_str):
 def leer_cartas(mensaje, cantidad, allowed=None):
     """
     Solicita al usuario 'cantidad' de cartas separadas por comas y las valida.
-    Si se proporciona el parámetro 'allowed', se verificará que cada carta
-    ingresada se encuentre en esa lista.
+    Si se proporciona el parámetro 'allowed', se verifica que cada carta esté en esa lista.
     """
     while True:
         entrada = input(mensaje)
@@ -81,29 +87,16 @@ def remover_cartas(baraja, cartas_a_remover):
 # ====================================
 # Funciones para la evaluación y sugerencia
 # ====================================
-def puntos_cartas(cartas, escobas=0):
+def puntos_cartas_original(cartas, escobas=0):
     """
-    Calcula el puntaje de las cartas aplicando las reglas de puntuación.
+    Función simple de puntuación (usada para sugerir jugadas).
     """
     total_cartas = len(cartas)
     pts_cartas = min(total_cartas, 21) / 21
     pts_velo = sum(1 for c in cartas if c == (7, 'O'))
-    pts_sietes = min(sum(1 for c in cartas if c[0] == 7 and c[1] != 'O'), 3) * (1/3)
+    pts_sietes = min(sum(1 for c in cartas if c[0] == 7 and c != (7, 'O')), 3) * (1/3)
     pts_oros = min(sum(1 for c in cartas if c[1] == 'O' and c != (7, 'O')), 6) * (1/6)
     return pts_cartas + pts_velo + pts_sietes + pts_oros + escobas
-
-def detalle_puntuacion(cartas, escobas):
-    """
-    Calcula el desglose de la puntuación.
-    """
-    return {
-        "cartas": min(len(cartas), 21) / 21,
-        "velo": sum(1 for c in cartas if c == (7, 'O')),
-        "sietes": min(sum(1 for c in cartas if c[0] == 7 and c[1] != 'O'), 3) * (1/3),
-        "oros": min(sum(1 for c in cartas if c[1] == 'O' and c != (7, 'O')), 6) * (1/6),
-        "escobas": escobas,
-        "total": puntos_cartas(cartas, escobas)
-    }
 
 def combinaciones_que_suman(cartas, objetivo):
     """
@@ -128,16 +121,13 @@ def evaluar_movida(card, mesa, deck, movida):
     """
     Evalúa una movida para una carta dada.
     'movida' es una tupla (tipo, combinación) donde tipo es "captura" o "no captura".
-    Retorna (neto, puntos_jugador, expectativa_oponente, new_mesa)
-    
-    - En una jugada de captura se asume que se capturan las cartas indicadas y, si la mesa queda vacía,
-      se suma la bonificación de escoba.
-    - En una jugada de no captura, la carta se coloca sobre la mesa sin obtener puntos inmediatos.
+    Retorna (neto, puntos_jugador, expectativa_oponente, new_mesa).
+    Se utiliza la función de puntos original para sugerencias.
     """
     if movida[0] == "captura":
         combo = movida[1]
         new_mesa = [c for c in mesa if c not in combo]
-        puntos_jugador = puntos_cartas(combo + [card], 1 if len(new_mesa) == 0 else 0)
+        puntos_jugador = puntos_cartas_original(combo + [card], 1 if len(new_mesa)==0 else 0)
     else:
         new_mesa = mesa + [card]
         puntos_jugador = 0
@@ -149,7 +139,7 @@ def evaluar_movida(card, mesa, deck, movida):
             mejor = 0
             for combo in combos:
                 new_mesa_op = [c for c in new_mesa if c not in combo]
-                pts = puntos_cartas(combo + [op_card], 1 if len(new_mesa_op) == 0 else 0)
+                pts = puntos_cartas_original(combo + [op_card], 1 if len(new_mesa_op)==0 else 0)
                 if pts > mejor:
                     mejor = pts
             total_oponente += mejor
@@ -160,17 +150,6 @@ def evaluar_movida(card, mesa, deck, movida):
     return neto, puntos_jugador, expectativa_oponente, new_mesa
 
 def sugerir_mejor_jugada(estado):
-    """
-    Sugiere la mejor jugada para el usuario evaluando, para cada carta en mano,
-    únicamente las jugadas de captura (si existen) y, en caso de que no exista captura,
-    la opción de no capturar.
-    
-    Se numeran las opciones y se permite elegir la estrategia mediante su número,
-    con la opción por defecto (al pulsar Enter) siendo la de mayor valor neto.
-    
-    Devuelve la jugada elegida y el nuevo estado de la mesa tras ejecutar la jugada.
-    La jugada se representa como una tupla (tipo, combinación, carta).
-    """
     evaluaciones_totales = []
     for card in estado['mano_usuario']:
         target = 15 - card[0]
@@ -219,13 +198,6 @@ def sugerir_mejor_jugada(estado):
         return None, estado['mesa']
 
 def sugerir_movida_oponente(op_card, mesa, deck):
-    """
-    Evalúa las posibles jugadas para el oponente, dada su carta, la mesa y el mazo.
-    Se generan todas las opciones de captura (si existen) y se añade la opción "no captura".
-    Devuelve una lista de evaluaciones: cada elemento es una tupla
-       (move, neto, puntos_oponente, expectativa_usuario, new_mesa)
-    donde move es una tupla (tipo, combinación, op_card).
-    """
     target = 15 - op_card[0]
     capture_combos = combinaciones_que_suman(mesa, target)
     moves = []
@@ -239,17 +211,6 @@ def sugerir_movida_oponente(op_card, mesa, deck):
     return evaluaciones
 
 def elegir_captura_usuario(estado):
-    """
-    Permite al usuario elegir entre las jugadas de captura disponibles con sus cartas,
-    cuando el oponente, teniendo posibilidad, renuncia a capturar.
-    Se muestran las opciones numeradas; la opción por defecto (al pulsar Enter) será la de mayor valor neto.
-    Una vez elegida la opción, se actualiza el estado:
-      - Se elimina la carta jugada de la mano.
-      - Se retiran de la mesa las cartas capturadas.
-      - Se añaden las cartas capturadas al montón del usuario.
-      - Se actualiza el contador de escobas si la mesa queda vacía.
-      - Se actualiza el último capturador.
-    """
     evaluaciones = []
     for card in estado['mano_usuario']:
         target = 15 - card[0]
@@ -301,6 +262,57 @@ def elegir_captura_usuario(estado):
     estado['mesa'] = new_mesa
     estado['last_capturador'] = "usuario"
 
+# --- FUNCIÓN DE PUNTOS FINAL POR CATEGORÍAS ---
+def calcular_puntuacion_final(estado):
+    """
+    Calcula el puntaje final para cada jugador según las categorías:
+      - "velo": N = 1, cuenta todas las cartas iguales a (7, 'O').
+      - "sietes": N = 4, cuenta todas las cartas con valor 7 (incluyendo el velo).
+      - "oros": N = 10, cuenta todas las cartas de oros (incluyendo el velo).
+      - "cartas": N = 40, cuenta todas las cartas capturadas.
+    El ganador de cada categoría (el que tenga más cartas capturadas en esa categoría) obtiene 1 punto;
+    en caso de empate, nadie obtiene puntos en esa categoría.
+    Las escobas suman 1 punto cada una.
+    Devuelve un diccionario con el puntaje total y un desglose por categoría para ambos jugadores.
+    """
+    def cuenta(cat, cartas):
+        if cat == "velo":
+            return sum(1 for c in cartas if c == (7, 'O'))
+        elif cat == "sietes":
+            return sum(1 for c in cartas if c[0] == 7)
+        elif cat == "oros":
+            return sum(1 for c in cartas if c[1] == 'O')
+        elif cat == "cartas":
+            return len(cartas)
+        else:
+            return 0
+
+    categorias = ["velo", "sietes", "oros", "cartas"]
+    puntos = {"usuario": 0, "oponente": 0}
+    desglose = {"usuario": {}, "oponente": {}}
+    for cat in categorias:
+        count_user = cuenta(cat, estado["capturadas_usuario"])
+        count_op = cuenta(cat, estado["capturadas_oponente"])
+        if count_user > count_op:
+            puntos["usuario"] += 1
+            desglose["usuario"][cat] = 1
+            desglose["oponente"][cat] = 0
+        elif count_op > count_user:
+            puntos["oponente"] += 1
+            desglose["usuario"][cat] = 0
+            desglose["oponente"][cat] = 1
+        else:
+            desglose["usuario"][cat] = 0
+            desglose["oponente"][cat] = 0
+    # Agregar escobas (1 punto cada una)
+    puntos["usuario"] += estado["escobas_usuario"]
+    puntos["oponente"] += estado["escobas_oponente"]
+    desglose["usuario"]["escobas"] = estado["escobas_usuario"]
+    desglose["oponente"]["escobas"] = estado["escobas_oponente"]
+    return puntos, desglose
+
+# Las funciones sugerir_movida, sugerir_movida_oponente y elegir_captura_usuario se mantienen (ya incluidas arriba).
+
 # ===============================
 # Función principal: escoba()
 # ===============================
@@ -320,7 +332,7 @@ def escoba():
 
     user_inicia = input("¿Tienes tú la mano (S/N)? ").strip().upper() == 'S'
     
-    # Lectura inicial: se validan las cartas usando la baraja completa.
+    # Lectura inicial validada
     estado['mesa'] = leer_cartas("Introduce las 4 cartas de la mesa: ", 4, allowed=estado['baraja'])
     estado['baraja'] = remover_cartas(estado['baraja'], estado['mesa'])
     estado['mano_usuario'] = leer_cartas("Introduce tus 3 cartas: ", 3, allowed=estado['baraja'])
@@ -331,7 +343,6 @@ def escoba():
         print(f"Mesa: {estado['mesa']}")
         print(f"Tu mano: {estado['mano_usuario']}")
         
-        # Sugerencia y ejecución de la jugada del usuario.
         move_user, new_mesa = sugerir_mejor_jugada(estado)
         if move_user is None:
             print("No hay jugadas evaluables. Pasando turno.")
@@ -353,8 +364,11 @@ def escoba():
                 estado['mesa'] = new_mesa
         
         # Turno del oponente:
-        op_carta = leer_cartas("Introduce la carta que juega tu oponente: ", 1, allowed=estado['baraja'])[0]
-        estado['baraja'] = remover_cartas(estado['baraja'], [op_carta])
+        if estado["baraja"]:
+            op_carta = leer_cartas("Introduce la carta que juega tu oponente: ", 1, allowed=estado['baraja'])[0]
+            estado['baraja'] = remover_cartas(estado['baraja'], [op_carta])
+        else:
+            op_carta = leer_cartas("Introduce la carta que juega tu oponente: ", 1)[0]
         evaluaciones_op = sugerir_movida_oponente(op_carta, estado['mesa'], estado['baraja'])
         if evaluaciones_op:
             if len(evaluaciones_op) == 1:
@@ -421,12 +435,9 @@ def escoba():
         else:
             estado['mesa'].append(op_carta)
         
-        # Mostrar siempre el estado actual de la mesa.
         print(f"\nEstado actual de la mesa: {estado['mesa']}")
         
         # Comprobación del final de la partida:
-        # Si no quedan cartas en la mano y en la baraja, se asignan las cartas que queden en la mesa
-        # al último jugador que capturó y se muestra un mensaje.
         if not estado["mano_usuario"] and not estado["baraja"]:
             if estado["mesa"]:
                 if estado["last_capturador"] == "usuario":
@@ -440,7 +451,6 @@ def escoba():
                 estado["mesa"] = []
             break
         
-        # Si se han acabado las cartas de la mano, se piden nuevas cartas SOLO si quedan en la baraja.
         if not estado["mano_usuario"]:
             if estado["baraja"]:
                 num_cards = 3 if len(estado["baraja"]) >= 3 else len(estado["baraja"])
@@ -448,7 +458,6 @@ def escoba():
                 estado["mano_usuario"] = nuevas
                 estado["baraja"] = remover_cartas(estado["baraja"], nuevas)
             else:
-                # Si no quedan cartas en la baraja, se procede a finalizar la partida.
                 if estado["mesa"]:
                     if estado["last_capturador"] == "usuario":
                         print(f"\nÚltima mano: Ganas las cartas {estado['mesa']} que quedan en la mesa.")
@@ -461,11 +470,14 @@ def escoba():
                     estado["mesa"] = []
                 break
     
-    # Mostrar la puntuación final y el detalle.
+    puntaje, desglose = calcular_puntuacion_final(estado)
     print("\n--- Puntuación Final ---")
-    for jugador in ["usuario", "oponente"]:
-        detalle = detalle_puntuacion(estado[f"capturadas_{jugador}"], estado[f"escobas_{jugador}"])
-        print(f"{jugador.capitalize()}: {detalle['total']:.2f} puntos (Cartas: {detalle['cartas']:.2f}, Velo: {detalle['velo']:.2f}, Sietes: {detalle['sietes']:.2f}, Oros: {detalle['oros']:.2f}, Escobas: {detalle['escobas']})")
+    print(f"Usuario: {puntaje['usuario']:.2f} puntos")
+    for cat, p in desglose["usuario"].items():
+        print(f"   {cat}: {p:.2f}")
+    print(f"Oponente: {puntaje['oponente']:.2f} puntos")
+    for cat, p in desglose["oponente"].items():
+        print(f"   {cat}: {p:.2f}")
 
 if __name__ == '__main__':
     escoba()
